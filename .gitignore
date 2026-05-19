@@ -1,0 +1,22 @@
+# Go
+*.exe
+*.test
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Env
+.env
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
