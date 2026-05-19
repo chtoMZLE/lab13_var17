@@ -83,24 +83,70 @@ rdb = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 tracer = trace.get_tracer("llm-agent")
 
 
+def _rule_based_fallback(incident: dict) -> dict:
+    """Детерминированный вердикт когда LLM недоступен."""
+    pattern = incident.get("pattern", "")
+    confidence = float(incident.get("confidence", 0))
+    event_count = int(incident.get("event_count", 0))
+    source_ips = incident.get("source_ips", [])
+    source_ip = source_ips[0] if source_ips else ""
+
+    is_internal = source_ip.startswith("10.") or source_ip.startswith("192.168.")
+
+    if pattern == "ddos":
+        verdict, threat_level = "TRUE_POSITIVE", "CRITICAL"
+        action, tactic = "block_ip", "Impact"
+    elif pattern == "brute_force" and is_internal:
+        verdict, threat_level = "SUSPICIOUS", "MEDIUM"
+        action, tactic = "investigate", "Credential Access"
+    elif pattern == "brute_force" and confidence > 0.8 and event_count > 5:
+        verdict, threat_level = "TRUE_POSITIVE", "HIGH"
+        action, tactic = "block_ip", "Credential Access"
+    elif pattern == "port_scan":
+        verdict, threat_level = "TRUE_POSITIVE", "MEDIUM"
+        action, tactic = "rate_limit", "Discovery"
+    else:
+        verdict, threat_level = "SUSPICIOUS", "LOW"
+        action, tactic = "alert_only", "null"
+
+    block_ips = list(source_ips) if verdict == "TRUE_POSITIVE" and action == "block_ip" and source_ips else []
+
+    return {
+        "incident_id": incident.get("incident_id", ""),
+        "verdict": verdict,
+        "threat_level": threat_level,
+        "mitre_tactic": tactic,
+        "recommended_action": action,
+        "reasoning": f"[rule-based fallback] pattern={pattern} confidence={confidence}",
+        "block_ips": block_ips,
+        "alert_soc": True,
+    }
+
+
 async def detect_threat(incident: dict) -> dict:
     with tracer.start_as_current_span("llm_detect") as span:
         span.set_attribute("incident.pattern", incident.get("pattern", ""))
         span.set_attribute("incident.confidence", float(incident.get("confidence", 0)))
 
-        response = client.messages.create(
-            model=os.getenv("LLM_MODEL", "claude-sonnet-4-20250514"),
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": json.dumps(incident, ensure_ascii=False)}]
-        )
-        raw = response.content[0].text.strip()
-        # Убираем markdown-блоки если модель всё же добавила их
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        verdict = json.loads(raw)
+        try:
+            response = client.messages.create(
+                model=os.getenv("LLM_MODEL", "claude-sonnet-4-20250514"),
+                max_tokens=500,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": json.dumps(incident, ensure_ascii=False)}]
+            )
+            raw = response.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            verdict = json.loads(raw)
+            span.set_attribute("llm.used", True)
+        except Exception as api_err:
+            print(f"[LLM-AGENT] API недоступен ({api_err.__class__.__name__}), используется rule-based fallback")
+            verdict = _rule_based_fallback(incident)
+            span.set_attribute("llm.used", False)
+
         rdb.incr("stats:llm_agent")
         return verdict
 
