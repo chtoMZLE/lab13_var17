@@ -180,8 +180,14 @@ func main() {
 		result := processVerdict(ctx, v, rdb)
 		rdb.Incr(ctx, "stats:blocker")
 
-		data, _ := json.Marshal(result)
-		nc.Publish("blocking.done", data)
+		data, err := json.Marshal(result)
+		if err != nil {
+			log.Printf("[BLOCKER] marshal error: %v", err)
+			return
+		}
+		if err := nc.Publish("blocking.done", data); err != nil {
+			log.Printf("[BLOCKER] publish error: %v", err)
+		}
 
 		log.Printf("[BLOCKER] incident=%s action=%s ips=%v", v.IncidentID, result.ActionTaken, v.BlockIPs)
 	})

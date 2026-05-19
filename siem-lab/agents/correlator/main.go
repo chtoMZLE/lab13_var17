@@ -64,8 +64,25 @@ func initTracer() func() {
 	return func() { tp.Shutdown(context.Background()) }
 }
 
+func scanKeys(ctx context.Context, rdb *redis.Client, pattern string) ([]string, error) {
+	var cursor uint64
+	var keys []string
+	for {
+		batch, next, err := rdb.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, batch...)
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return keys, nil
+}
+
 func checkPatterns(ctx context.Context, rdb *redis.Client, nc *natsgo.Conn) {
-	keys, err := rdb.Keys(ctx, "event:*").Result()
+	keys, err := scanKeys(ctx, rdb, "event:*")
 	if err != nil {
 		return
 	}
@@ -104,6 +121,11 @@ func checkPatterns(ctx context.Context, rdb *redis.Client, nc *natsgo.Conn) {
 	}
 	for ip, count := range authByIP {
 		if count > 5 {
+			dedupKey := fmt.Sprintf("incident_sent:brute_force:%s", ip)
+			if rdb.Exists(ctx, dedupKey).Val() > 0 {
+				continue
+			}
+			rdb.Set(ctx, dedupKey, "1", 120*time.Second)
 			incident := Incident{
 				IncidentID:        uuid.New().String(),
 				Pattern:           "brute_force",
@@ -128,6 +150,11 @@ func checkPatterns(ctx context.Context, rdb *redis.Client, nc *natsgo.Conn) {
 	}
 	for ip, ports := range portsByIP {
 		if len(ports) > 10 {
+			dedupKey := fmt.Sprintf("incident_sent:port_scan:%s", ip)
+			if rdb.Exists(ctx, dedupKey).Val() > 0 {
+				continue
+			}
+			rdb.Set(ctx, dedupKey, "1", 120*time.Second)
 			incident := Incident{
 				IncidentID:        uuid.New().String(),
 				Pattern:           "port_scan",
@@ -152,6 +179,11 @@ func checkPatterns(ctx context.Context, rdb *redis.Client, nc *natsgo.Conn) {
 	}
 	for destIP, srcIPs := range countByDest {
 		if len(srcIPs) > 20 {
+			dedupKey := fmt.Sprintf("incident_sent:ddos:%s", destIP)
+			if rdb.Exists(ctx, dedupKey).Val() > 0 {
+				continue
+			}
+			rdb.Set(ctx, dedupKey, "1", 120*time.Second)
 			ips := make([]string, 0, len(srcIPs))
 			for ip := range srcIPs {
 				ips = append(ips, ip)
@@ -243,23 +275,12 @@ func main() {
 		log.Fatalf("[CORRELATOR] Subscribe error: %v", err)
 	}
 
-	// Подписка на аукционные задачи
-	nc.Subscribe("tasks.auction", func(msg *natsgo.Msg) {
-		var task map[string]interface{}
-		if err := json.Unmarshal(msg.Data, &task); err != nil {
-			return
-		}
-		taskID, _ := task["task_id"].(string)
-		// Простая метрика стоимости — загрузка 30%
-		bid := map[string]interface{}{
-			"task_id":  taskID,
-			"agent_id": "correlator-1",
-			"cost":     0.3,
-			"reason":   "загрузка 30%",
-		}
-		data, _ := json.Marshal(bid)
-		nc.Publish("tasks.bids", data)
-	})
+	// Подписка на аукционные задачи (логика в auction.go)
+	if _, err := nc.Subscribe("tasks.auction", func(msg *natsgo.Msg) {
+		handleAuction(msg, nc)
+	}); err != nil {
+		log.Printf("[CORRELATOR] auction subscribe error: %v", err)
+	}
 
 	log.Println("[CORRELATOR] ожидаю события на topics logs.normalized...")
 	select {}

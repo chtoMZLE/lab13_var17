@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,32 +72,21 @@ func normalizeLog(raw string) NormalizedEvent {
 	}
 
 	switch {
-	case contains(raw, "Failed password") || contains(raw, "authentication failure"):
+	case strings.Contains(raw, "Failed password") || strings.Contains(raw, "authentication failure"):
 		evt.EventType = "auth_failure"
 		evt.Severity = "WARNING"
-	case contains(raw, "port scan") || contains(raw, "nmap"):
+	case strings.Contains(raw, "port scan") || strings.Contains(raw, "nmap"):
 		evt.EventType = "port_scan"
 		evt.Severity = "ERROR"
-	case contains(raw, "DDoS") || contains(raw, "flood"):
+	case strings.Contains(raw, "DDoS") || strings.Contains(raw, "flood"):
 		evt.EventType = "ddos"
 		evt.Severity = "CRITICAL"
-	case contains(raw, "Accepted password") || contains(raw, "session opened"):
+	case strings.Contains(raw, "Accepted password") || strings.Contains(raw, "session opened"):
 		evt.EventType = "normal"
 		evt.Severity = "INFO"
 	}
 
 	return evt
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && func() bool {
-		for i := 0; i <= len(s)-len(sub); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-		return false
-	}()
 }
 
 func initTracer() func() {
@@ -159,7 +149,11 @@ func main() {
 			attribute.String("source.ip", evt.SourceIP),
 		)
 
-		data, _ := json.Marshal(evt)
+		data, err := json.Marshal(evt)
+		if err != nil {
+			log.Printf("[LOG-COLLECTOR] marshal error: %v", err)
+			return
+		}
 		if err := nc.Publish("logs.normalized", data); err != nil {
 			log.Printf("[LOG-COLLECTOR] publish error: %v", err)
 			return
