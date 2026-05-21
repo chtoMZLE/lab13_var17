@@ -100,7 +100,7 @@ func processVerdict(ctx context.Context, v Verdict, rdb *redis.Client) BlockingR
 	case v.Verdict == "TRUE_POSITIVE" && v.ThreatLevel == "MEDIUM":
 		result.ActionTaken = "rate_limited"
 		for _, ip := range v.BlockIPs {
-			rdb.SAdd(ctx, "blocked_ips", ip)
+			rdb.SAdd(ctx, "rate_limited_ips", ip)
 			result.FirewallRules = append(result.FirewallRules, FirewallRule{
 				Command:         fmt.Sprintf("iptables -A INPUT -s %s -m limit --limit 10/min -j ACCEPT", ip),
 				TargetIP:        ip,

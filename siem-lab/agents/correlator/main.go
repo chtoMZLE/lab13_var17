@@ -248,9 +248,12 @@ func main() {
 
 	tracer := otel.Tracer("correlator")
 
-	_, err = nc.Subscribe("logs.normalized", func(msg *natsgo.Msg) {
+	_, err = nc.QueueSubscribe("logs.normalized", "correlators", func(msg *natsgo.Msg) {
 		ctx, span := tracer.Start(context.Background(), "correlate_event")
 		defer span.End()
+
+		// Уменьшаем счётчик очереди: сообщение принято в обработку
+		rdb.Decr(ctx, "queue:depth")
 
 		var evt NormalizedEvent
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {

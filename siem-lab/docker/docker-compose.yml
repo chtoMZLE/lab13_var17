@@ -1,15 +1,24 @@
 version: '3.8'
+
+networks:
+  siem-network:
+    name: siem-network
+
 services:
   nats:
     image: nats:latest
     ports:
       - "4222:4222"
       - "8222:8222"
+    networks:
+      - siem-network
 
   redis:
     image: redis:alpine
     ports:
       - "6379:6379"
+    networks:
+      - siem-network
 
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -19,3 +28,51 @@ services:
       - "16686:16686"
       - "14268:14268"
       - "4317:4317"
+    networks:
+      - siem-network
+
+  # Базовый экземпляр коррелятора — всегда запущен.
+  # Scaler добавляет дополнительные контейнеры при росте очереди.
+  correlator:
+    build:
+      context: ..
+      dockerfile: agents/correlator/Dockerfile
+    image: siem-correlator:latest
+    environment:
+      - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis://redis:6379
+      - JAEGER_URL=http://jaeger:14268/api/traces
+    depends_on:
+      - nats
+      - redis
+      - jaeger
+    restart: unless-stopped
+    networks:
+      - siem-network
+
+  # Авто-масштабирование: следит за queue:depth в Redis,
+  # запускает/останавливает дополнительные контейнеры siem-correlator
+  # через Docker API при превышении порогов.
+  scaler:
+    build:
+      context: ..
+      dockerfile: scaler/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
+      - JAEGER_URL=http://jaeger:14268/api/traces
+      - SCALE_UP_THRESHOLD=10
+      - SCALE_DOWN_THRESHOLD=3
+      - MAX_INSTANCES=3
+      - POLL_INTERVAL=5
+      - DOCKER_NETWORK=siem-network
+      - CORRELATOR_IMAGE=siem-correlator:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - redis
+      - nats
+      - correlator
+    restart: unless-stopped
+    networks:
+      - siem-network

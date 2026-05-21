@@ -160,6 +160,7 @@ func main() {
 		}
 
 		rdb.Incr(ctx, "stats:log_collector")
+		rdb.Incr(ctx, "queue:depth")
 		log.Printf("[LOG-COLLECTOR] id=%s event_type=%s source_ip=%s", evt.ID, evt.EventType, evt.SourceIP)
 	})
 	if err != nil {
